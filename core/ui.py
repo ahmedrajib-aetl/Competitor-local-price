@@ -91,6 +91,9 @@ section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
 
 /* --------------------------------------------------------------- KPI row */
 .kpi-grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:11px; margin:2px 0 20px; }
+.kpi-grid.five { grid-template-columns:repeat(5, minmax(0,1fr)); }
+.k-sub .s-up { color:#34d399; font-weight:700; }
+.k-sub .s-down { color:#fb7185; font-weight:700; }
 .kpi {
   border:1px solid var(--cph-line); border-radius:15px; padding:14px 16px 13px;
   background:linear-gradient(155deg, rgba(20,33,54,.92), rgba(13,23,40,.92));
@@ -198,6 +201,10 @@ table.qt .price { font-weight:800; color:#f3f7ff; font-size:13.5px; }
 .badge.low { background:rgba(39,194,129,.15); color:#54dda6; border:1px solid rgba(39,194,129,.3); }
 .badge.high { background:rgba(240,81,109,.13); color:#ff8ca1; border:1px solid rgba(240,81,109,.28); }
 .qt-note { font-size:10.5px; color:#7d93b3; margin-top:7px; }
+table.qt tr.total td {
+  background:rgba(79,140,255,.10); font-weight:750; color:#eaf1fb;
+  border-top:1px solid rgba(79,140,255,.35);
+}
 
 .empty {
   border:1px dashed rgba(148,163,184,.3); border-radius:14px; padding:36px 20px;
@@ -214,7 +221,8 @@ table.qt .price { font-weight:800; color:#f3f7ff; font-size:13.5px; }
 
 @keyframes cph-fade { from { opacity:0; transform:translateY(4px);} to { opacity:1; transform:none;} }
 @media (max-width: 1100px) { .kpi-grid { grid-template-columns:repeat(2, minmax(0,1fr)); } .cph-head h1 { font-size:26px; } }
-@media (max-width: 640px) { .kpi-grid { grid-template-columns:1fr; } .cph-head h1 { font-size:23px; } }
+@media (max-width: 1280px) { .kpi-grid.five { grid-template-columns:repeat(3, minmax(0,1fr)); } }
+@media (max-width: 640px) { .kpi-grid { grid-template-columns:1fr; } .cph-head h1 { font-size:23px; } .kpi-grid.five { grid-template-columns:1fr; } }
 </style>
 """
 
@@ -242,7 +250,8 @@ def fmt_signed(value: float | int | None) -> str:
 def header(cfg: config.SheetConfig, meta: dict, dataset, updated: str) -> None:
     live = bool(meta.get("live"))
     status_class = "live" if live else "snapshot"
-    status_text = "LIVE SHEET" if live else "SNAPSHOT"
+    status_text = "LIVE" if live else "SNAPSHOT"
+    entity = "importers" if cfg.mode == "long" else "competitors"
     parts = cfg.title.split("—", 1)
     if len(parts) == 2:
         heading = f"{_esc(parts[0].strip())} — <em>{_esc(parts[1].strip())}</em>"
@@ -263,12 +272,242 @@ def header(cfg: config.SheetConfig, meta: dict, dataset, updated: str) -> None:
             <div class="cph-chips">
               <span class="chip {status_class}"><span class="dot"></span>{status_text}</span>
               <span class="chip">{_esc(cfg.unit)}</span>
-              <span class="chip">{len(dataset.competitors)} competitors</span>
+              <span class="chip">{len(dataset.competitors)} {entity}</span>
               <span class="chip">Data to {dataset.long["Date"].max():%d %b %Y}</span>
               <span class="chip">Fetched {_esc(updated)}</span>
             </div>
           </div>
           <div class="cph-rule"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def fmt_qty(value) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    value = float(value)
+    if abs(value) >= 1000:
+        return f"{value:,.0f}"
+    text = f"{value:,.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def fmt_bdt(value) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    value = float(value)
+    if abs(value) >= 1e7:
+        return f"{value / 1e7:,.2f}Cr"
+    if abs(value) >= 1e5:
+        return f"{value / 1e5:,.2f}L"
+    if abs(value) >= 1e3:
+        return f"{value / 1e3:,.1f}K"
+    return f"{value:,.0f}"
+
+
+def fmt_rate(value) -> str:
+    return fmt_bdt(value)
+
+
+def stock_header(cfg: config.SheetConfig, meta: dict, dataset, latest, updated: str) -> None:
+    live = bool(meta.get("live"))
+    status_class = "live" if live else "snapshot"
+    status_text = "LIVE" if live else "SNAPSHOT"
+    parts = cfg.title.split("—", 1)
+    if len(parts) == 2:
+        heading = f"{_esc(parts[0].strip())} — <em>{_esc(parts[1].strip())}</em>"
+    else:
+        heading = _esc(cfg.title)
+    st.markdown(
+        f"""
+        <div class="cph-head">
+          <div class="cph-head-top">
+            <div class="cph-brand">
+              <div class="cph-logo">AEL</div>
+              <div>
+                <div class="cph-kicker">AEL Trading · Daily Stock Intelligence</div>
+                <h1>{heading}</h1>
+                <p class="cph-sub">{_esc(cfg.subtitle)}</p>
+              </div>
+            </div>
+            <div class="cph-chips">
+              <span class="chip {status_class}"><span class="dot"></span>{status_text}</span>
+              <span class="chip">MT · BDT</span>
+              <span class="chip">{dataset.rows} rows</span>
+              <span class="chip">Data to {latest:%d %b %Y}</span>
+              <span class="chip">Fetched {_esc(updated)}</span>
+            </div>
+          </div>
+          <div class="cph-rule"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def stock_kpis(k: dict, latest, prev_label: str, group_label: str) -> None:
+    base = "SBU" if group_label == "SBU" else "product"
+    plural = base if k["groups"] == 1 else base + "s"
+
+    def delta_html(value, label):
+        if value is None:
+            return "first report" if not label else f"no previous match · {_esc(label)}"
+        cls = "s-up" if value > 0 else ("s-down" if value < 0 else "")
+        arrow = "▲" if value > 0 else ("▼" if value < 0 else "•")
+        return f"<span class='{cls}'>{arrow} {abs(value):.1f}%</span> vs {_esc(label)}"
+
+    st.markdown(
+        f"""
+        <div class="kpi-grid five">
+          <div class="kpi">
+            <div class="k-label">Total Quantity</div>
+            <div class="k-value">{fmt_qty(k['quantity'])}<small>MT</small></div>
+            <div class="k-sub">{delta_html(k['quantity_delta'], prev_label or 'previous date')}</div>
+          </div>
+          <div class="kpi">
+            <div class="k-label">Total Value</div>
+            <div class="k-value">{fmt_bdt(k['value'])}<small>BDT</small></div>
+            <div class="k-sub">{delta_html(k['value_delta'], prev_label or 'previous date')}</div>
+          </div>
+          <div class="kpi">
+            <div class="k-label">Items in Stock</div>
+            <div class="k-value">{k['items']}</div>
+            <div class="k-sub">across {k['groups']} {plural} · {k['rows']} rows</div>
+          </div>
+          <div class="kpi">
+            <div class="k-label">Warehouses</div>
+            <div class="k-value">{k['warehouses']}</div>
+            <div class="k-sub">{f"{k['plants']} plant{'s' if k['plants'] != 1 else ''} · " if k['plants'] else ""}{k['groups']} {plural}</div>
+          </div>
+          <div class="kpi">
+            <div class="k-label">Average Rate</div>
+            <div class="k-value">{fmt_rate(k['average'])}<small>BDT/MT</small></div>
+            <div class="k-sub">value ÷ quantity on {latest:%d %b %Y}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def stock_table(summary: pd.DataFrame, dimension: str, label: str, unit: str) -> None:
+    if summary is None or summary.empty:
+        empty_state("No stock rows for this selection.")
+        return
+
+    total_qty = float(summary["Quantity"].sum())
+    total_value = float(summary["Value"].sum())
+    total_rate = total_value / total_qty if total_qty else float("nan")
+
+    rows = []
+    for index, row in summary.iterrows():
+        rows.append(
+            "<tr>"
+            f"<td class='rank'>{index + 1:02d}</td>"
+            f"<td><b>{_esc(row[dimension])}</b></td>"
+            f"<td class='num'>{fmt_qty(row['Quantity'])}</td>"
+            f"<td class='num'>{row['QtyShare']:.1f}%</td>"
+            f"<td class='num'>{fmt_bdt(row['Value'])}</td>"
+            f"<td class='num'>{row['ValueShare']:.1f}%</td>"
+            f"<td class='num'>{fmt_rate(row['AvgRate'])}</td>"
+            f"<td class='num'>{int(row['Rows'])}</td>"
+            "</tr>"
+        )
+    rows.append(
+        "<tr class='total'>"
+        "<td></td><td>Total</td>"
+        f"<td class='num'>{fmt_qty(total_qty)}</td><td class='num'>100.0%</td>"
+        f"<td class='num'>{fmt_bdt(total_value)}</td><td class='num'>100.0%</td>"
+        f"<td class='num'>{fmt_rate(total_rate)}</td>"
+        f"<td class='num'>{int(summary['Rows'].sum())}</td>"
+        "</tr>"
+    )
+
+    st.markdown(
+        f"""
+        <div class="qt-wrap">
+          <table class="qt">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>{_esc(label)}</th>
+                <th class="num">Qty (MT)</th>
+                <th class="num">Share</th>
+                <th class="num">Value (BDT)</th>
+                <th class="num">Share</th>
+                <th class="num">Avg Rate (BDT/MT)</th>
+                <th class="num">Rows</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def stock_overall_table(detail: pd.DataFrame, group_label: str, unit: str) -> None:
+    if detail is None or detail.empty:
+        empty_state("No stock rows for this selection.")
+        return
+
+    show_plant = detail["Plant"].astype(str).str.strip().ne("").any()
+    total_qty = float(detail["Quantity"].sum())
+    total_value = float(detail["Value"].sum())
+    total_rate = total_value / total_qty if total_qty else float("nan")
+
+    rows = []
+    for index, row in detail.iterrows():
+        plant_cell = f"<td>{_esc(row['Plant'])}</td>" if show_plant else ""
+        rows.append(
+            "<tr>"
+            f"<td class='rank'>{index + 1:02d}</td>"
+            f"<td><b>{_esc(row[group_label])}</b></td>"
+            f"<td>{_esc(row['Item'])}</td>"
+            f"{plant_cell}"
+            f"<td>{_esc(row['Warehouse'])}</td>"
+            f"<td class='num'>{fmt_qty(row['Quantity'])}</td>"
+            f"<td class='num'>{row['QtyShare']:.1f}%</td>"
+            f"<td class='num'>{fmt_bdt(row['Value'])}</td>"
+            f"<td class='num'>{row['ValueShare']:.1f}%</td>"
+            f"<td class='num'>{fmt_rate(row['AvgRate'])}</td>"
+            "</tr>"
+        )
+    rows.append(
+        "<tr class='total'>"
+        "<td></td><td>Total</td><td></td>"
+        f"{'<td></td>' if show_plant else ''}"
+        "<td></td>"
+        f"<td class='num'>{fmt_qty(total_qty)}</td><td class='num'>100.0%</td>"
+        f"<td class='num'>{fmt_bdt(total_value)}</td><td class='num'>100.0%</td>"
+        f"<td class='num'>{fmt_rate(total_rate)}</td>"
+        "</tr>"
+    )
+
+    plant_header = "<th>Plant</th>" if show_plant else ""
+    st.markdown(
+        f"""
+        <div class="qt-wrap">
+          <table class="qt">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>{_esc(group_label)}</th>
+                <th>Item</th>
+                {plant_header}
+                <th>Warehouse</th>
+                <th class="num">Qty (MT)</th>
+                <th class="num">Share</th>
+                <th class="num">Value (BDT)</th>
+                <th class="num">Share</th>
+                <th class="num">Avg Rate (BDT/MT)</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
         </div>
         """,
         unsafe_allow_html=True,
@@ -337,7 +576,56 @@ def empty_state(message: str) -> None:
     st.markdown(f"<div class='empty'>{_esc(message)}</div>", unsafe_allow_html=True)
 
 
-def quote_table(quotes: pd.DataFrame, unit: str) -> None:
+def origin_summary_table(summary: pd.DataFrame, total: dict, latest, unit: str) -> None:
+    """Latest-date origin summary: quantity sum + simple mean sale rate."""
+    if summary is None or summary.empty:
+        empty_state("No rows for the selected filters.")
+        return
+
+    date_label = latest.strftime("%d-%b-%Y")
+    rows = []
+    for _, row in summary.iterrows():
+        rows.append(
+            "<tr>"
+            f"<td><b>{_esc(row['Origin'])}</b></td>"
+            f"<td>{date_label}</td>"
+            f"<td class='num'>{fmt_int(row['Quantity'])}</td>"
+            f"<td class='num'>{fmt_int(row['AverageRate'])}</td>"
+            "</tr>"
+        )
+    rows.append(
+        "<tr class='total'>"
+        "<td>Grand Total</td>"
+        "<td></td>"
+        f"<td class='num'>{fmt_int(total.get('Quantity'))}</td>"
+        f"<td class='num'>{fmt_int(total.get('AverageRate'))}</td>"
+        "</tr>"
+    )
+
+    st.markdown(
+        f"""
+        <div class="qt-wrap">
+          <table class="qt summary">
+            <thead>
+              <tr>
+                <th>Country of Origin</th>
+                <th>Date</th>
+                <th class="num">Dumping Quantity (MT)</th>
+                <th class="num">Average Sale / Retail Rate ({_esc(unit)})</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>
+        <div class="qt-note">Latest reporting date only. Quantity = sum of
+        Quantity (MT); rate = simple mean of the sale rates on that date.
+        Zero / blank rates are ignored.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def quote_table(quotes: pd.DataFrame, unit: str, name_header: str = "Competitor") -> None:
     if quotes.empty:
         empty_state("No competitor quoted on the latest date for this filter.")
         return
@@ -399,6 +687,8 @@ def quote_table(quotes: pd.DataFrame, unit: str) -> None:
             str(row.get("Category", "") or ""),
         ]
         meta = " · ".join(bit for bit in meta_bits if bit and bit != "All")
+        if "Meta" in quotes.columns:
+            meta = str(row.get("Meta", "") or "")
         meta_html = f"<span class='meta'>{_esc(meta)}</span>" if meta else ""
 
         product_cell = f"<td>{_esc(product)}</td>" if has_product else ""
@@ -424,7 +714,7 @@ def quote_table(quotes: pd.DataFrame, unit: str) -> None:
           <table class="qt">
             <thead>
               <tr>
-                <th>#</th>{product_header}<th>Competitor</th><th class="num">Latest ({_esc(unit)})</th><th class="num">Previous</th><th class="num">Δ</th><th class="num">Δ %</th><th class="num">Quotes</th><th class="num">Min – Max</th><th class="num">vs Market</th>
+                <th>#</th>{product_header}<th>{_esc(name_header)}</th><th class="num">Latest ({_esc(unit)})</th><th class="num">Previous</th><th class="num">Δ</th><th class="num">Δ %</th><th class="num">Quotes</th><th class="num">Min – Max</th><th class="num">vs Market</th>
               </tr>
             </thead>
             <tbody>{''.join(rows)}</tbody>
@@ -443,6 +733,10 @@ def footer(cfg: config.SheetConfig, meta: dict) -> None:
     source = _esc(meta.get("source", ""))
     note = _esc(meta.get("note", ""))
     error = _esc(meta.get("error", ""))
+    if cfg.mode == "stock":
+        description = "quantities and values are as reported by iBOS, not adjusted."
+    else:
+        description = "prices are as reported by the market, not adjusted."
     extra = f"<br><span style='color:#f5b95e'>{note}</span>" if note else ""
     if error and meta.get("live"):
         extra += f"<br><span style='color:#7d93b3'>Fallback detail: {error}</span>"
@@ -450,10 +744,10 @@ def footer(cfg: config.SheetConfig, meta: dict) -> None:
         f"""
         <div class="foot">
           <b>Source:</b> <a href="{cfg.sheet_url}" target="_blank" style="color:#7fb0ff;text-decoration:none">{_esc(cfg.source_note)}</a> ·
-          {source} · unit {_esc(cfg.unit)} · prices are as reported by the market, not adjusted.
+          {source} · unit {_esc(cfg.unit)} · {description}
           {extra}
           <br>Built for AEL Trading, Khatunganj. All figures update automatically when the
-          Google Sheet changes — use <b>Refresh now</b> in the header or sidebar to pull immediately.
+          source changes — use <b>Refresh now</b> in the header or sidebar to pull immediately.
         </div>
         """,
         unsafe_allow_html=True,

@@ -134,6 +134,25 @@ def _read_public(cfg: config.SheetConfig) -> tuple[pd.DataFrame, str, str]:
     """Read the public export. Returns (frame, source label, note)."""
     errors: list[str] = []
 
+    if cfg.source_type == "drive":
+        url = f"https://drive.google.com/uc?export=download&id={cfg.sheet_id}"
+        try:
+            body = _get(url)
+            book = pd.ExcelFile(io.BytesIO(body))
+            note = ""
+            if cfg.tab_name and cfg.tab_name in book.sheet_names:
+                sheet_name = cfg.tab_name
+            else:
+                sheet_name = book.sheet_names[0]
+                note = (
+                    f"Tab “{cfg.tab_name}” was not found; reading the first tab "
+                    f"“{sheet_name}” instead."
+                )
+            raw = book.parse(sheet_name=sheet_name, header=None, dtype=object)
+            return _frame_from_grid(raw), f"Google Drive · live · {sheet_name}", note
+        except Exception as exc:
+            raise SourceError(f"Google Drive download: {exc}") from exc
+
     if cfg.gid is not None:
         url = (
             f"https://docs.google.com/spreadsheets/d/{cfg.sheet_id}"
@@ -235,9 +254,9 @@ def _load_cached(key: str, nonce: int = 0) -> tuple[pd.DataFrame, dict]:
     errors: list[str] = []
 
     readers = [_read_public]
-    if _service_account_info():
+    if _service_account_info() and cfg.source_type != "drive":
         # A configured service account is the right transport for a private
-        # sheet, and avoids a pointless 401 from the public export.
+        # Google Sheet, and avoids a pointless 401 from the public export.
         readers.insert(0, _read_service_account)
 
     for reader in readers:

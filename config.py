@@ -10,13 +10,13 @@ from dataclasses import dataclass, field
 
 
 # ------------------------------------------------------------------ behaviour
-# How long a downloaded sheet is reused before Google is asked again.  Keep this
-# short: the dashboard is meant to show the market as it is now.
-CACHE_TTL_SECONDS = 30
+# How long a downloaded source is reused before it is downloaded again.
+# 3600 = one hour. "Refresh now" always bypasses this.
+CACHE_TTL_SECONDS = 3600
 
-# The page quietly refreshes itself on this interval (seconds).  Set to None to
-# disable the automatic refresh entirely.
-AUTO_REFRESH_SECONDS = 60
+# The page quietly refreshes itself on this interval (seconds).
+# 3600 = once an hour.
+AUTO_REFRESH_SECONDS = 3600
 
 REQUEST_TIMEOUT_SECONDS = 45
 
@@ -44,47 +44,38 @@ class SheetConfig:
     product_pills: bool = True     # True = button style, False = dropdown
     own_brand: str = "AEL"         # thicker line for our own company
     title_products: bool = False   # tidy ALL-CAPS product names (coal)
+    mode: str = "wide"             # "wide" = competitor columns, "long" = one row per quote
+    source_type: str = "sheets"    # "sheets" = native Google Sheet, "drive" = uploaded xlsx
+    source_url: str | None = None  # optional custom link shown in the app
     aliases: dict[str, str] = field(default_factory=dict)
 
     @property
     def sheet_url(self) -> str:
-        return f"https://docs.google.com/spreadsheets/d/{self.sheet_id}/edit"
+        return self.source_url or f"https://docs.google.com/spreadsheets/d/{self.sheet_id}/edit"
 
 
 # ---------------------------------------------------------------------- pages
 COAL = SheetConfig(
     key="coal",
     label="Coal",
-    title="Coal — Competitor Local Price",
-    subtitle="Khatunganj daily retail price · BDT per metric ton · coal grades by origin",
+    title="Coal — Market Database",
+    subtitle="Khatunganj coal market · BDT per metric ton · location, importer, origin & mine",
     icon="⛏️",
-    sheet_id="1RMKAzbjWvWm0KmDIyM_cR_N0OvHhECTZZPyT-4Hx4Jg",
-    tab_name="COAL APPX PRICE",
-    gid=1780791072,
+    sheet_id="1EQBuUlDPQS3fPP5yOTfWe-R9JPml1kT0",
+    tab_name="Master Database",
+    gid=None,
     unit="BDT/MT",
     unit_short="MT",
     snapshot="data/coal_snapshot.csv",
-    source_note="Coal Appx Price · Khatunganj daily collection",
-    product_pills=True,
-    own_brand="Akij Bongo Traders",
-    title_products=True,
+    source_note="Coal Market Database · Master Database",
+    product_pills=False,
+    own_brand="",
+    title_products=False,
+    mode="long",
+    source_type="drive",
+    source_url="https://docs.google.com/spreadsheets/d/1EQBuUlDPQS3fPP5yOTfWe-R9JPml1kT0/edit?usp=sharing&rtpof=true&sd=true",
     aliases={
-        "Akij_Bongo Traders Ltd.": "Akij Bongo Traders",
-        "Akij Bongo Traders Ltd.": "Akij Bongo Traders",
-        "NABIL GRP": "Nabil Group",
-        "SHAHARA": "Shahara",
-        "NOAPARA": "Noapara",
-        "SHEIKH": "Sheikh",
-        "SABISA": "Sabisa",
-        "ABUL KHAIR": "Abul Khair",
-        "TST/JHM": "TST / JHM",
-        "SARKER": "Sarker",
-        "SOINIK": "Soinik",
-        "BASHUNDHARA": "Bashundhara",
-        "CROWN": "Crown",
-        "Meghna Group": "Meghna Group",
-        "FAKR UDDIN": "Fakr Uddin",
-        "FALAL UDDIN": "Falal Uddin",
+        "Sheikh Bhorthers": "Sheikh Brothers",
     },
 )
 
@@ -110,13 +101,51 @@ GRAIN = SheetConfig(
     },
 )
 
+# ----------------------------------------------------------------- stock pages
+GRAIN_STOCK = SheetConfig(
+    key="grain_stock",
+    label="Grain Stock",
+    title="Grain — Daily Stock Report",
+    subtitle="Grain stock by product, item, plant and warehouse · quantity in MT and value in BDT",
+    icon="📦",
+    sheet_id="1a2zNQH_9xPKaE_D7eH67LDb-BoHnlD4A3aoL65FYb34",
+    tab_name="Master Data",
+    gid=None,
+    unit="MT",
+    unit_short="MT",
+    snapshot="data/grain_stock_snapshot.csv",
+    source_note="AEL Daily Stock Report · Master Data",
+    product_pills=False,
+    own_brand="",
+    mode="stock",
+)
+
+COAL_STOCK = SheetConfig(
+    key="coal_stock",
+    label="Coal Stock",
+    title="Coal — Daily Stock Report",
+    subtitle="Coal stock by SBU, warehouse and item · physical quantity in MT and value in BDT",
+    icon="📦",
+    sheet_id="1sTYUr8gksQx_zu8hPAtwykMr2aU93g-Wh7-asI0yQfg",
+    tab_name="Master Data",
+    gid=None,
+    unit="MT",
+    unit_short="MT",
+    snapshot="data/coal_stock_snapshot.csv",
+    source_note="AEL Daily Stock Report · Master Data",
+    product_pills=False,
+    own_brand="",
+    mode="stock",
+)
+
 # Add another SheetConfig here later (e.g. rice, sugar) and a third page will
 # appear automatically — no other code changes needed.
 SHEETS: list[SheetConfig] = [COAL, GRAIN]
+STOCKS: list[SheetConfig] = [GRAIN_STOCK, COAL_STOCK]
 
 
 def get_sheet(key: str) -> SheetConfig:
-    for sheet in SHEETS:
+    for sheet in [*SHEETS, *STOCKS]:
         if sheet.key == key:
             return sheet
     raise KeyError(f"Unknown sheet: {key}")

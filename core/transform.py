@@ -474,3 +474,294 @@ def detail_rows(frame: pd.DataFrame) -> pd.DataFrame:
     table = table.sort_values(["Date", "Product", "Competitor"], ascending=[False, True, True])
     table["Date"] = table["Date"].dt.strftime("%Y-%m-%d")
     return table
+
+
+# ===================================================================== long mode
+# Coal Master Database: one row per importer / product / mine quote.  There are
+# no competitor columns; the "competitor" is the Importers / Traders column.
+
+_LONG_COLUMNS = {
+    "Date": {"date"},
+    "Location": {"location", "dumping point", "dumping location"},
+    "Competitor": {
+        "importers/ traders", "importers/traders", "importers / traders",
+        "importer", "trader", "importers", "importer / trader",
+    },
+    "Origin": {"origin", "country of origin", "country"},
+    "Grade": {"coal grade / cal (kcal)", "coal grade", "grade", "cal", "kcal"},
+    "Mine": {"mine", "mine / grade", "mine/grade", "coal mine"},
+    "Quantity": {"quantity (mt)", "quantity", "qty", "quantity mt"},
+    "Price": {"sale / retail rate (bdt/mt)", "sale/retail rate", "rate",
+              "sale rate", "retail rate", "price"},
+    "Status": {"status"},
+    "Remarks": {"remarks", "remark", "remarks "},
+    "Vessel": {"vessel name", "vessel"},
+    "VesselQty": {"vessel qty (mt)", "vessel qty", "vessel quantity"},
+}
+
+
+def _long_key(column: str) -> str | None:
+    token = _norm(column)
+    for canonical, names in _LONG_COLUMNS.items():
+        if token in names:
+            return canonical
+    # Tolerant fallbacks for renamed headers.
+    if "date" in token:
+        return "Date"
+    if "importer" in token or "trader" in token:
+        return "Competitor"
+    if "origin" in token or "country" in token:
+        return "Origin"
+    if "location" in token or "dumping point" in token:
+        return "Location"
+    if "grade" in token or token.endswith("kcal") or "cal (" in token:
+        return "Grade"
+    if token.startswith("mine"):
+        return "Mine"
+    if "quantity" in token:
+        return "Quantity"
+    if "vessel" in token and "qty" in token:
+        return "VesselQty"
+    if "vessel" in token:
+        return "Vessel"
+    if "sale" in token or "retail" in token or token == "price" or "rate" in token:
+        return "Price"
+    if "status" in token:
+        return "Status"
+    if "remark" in token:
+        return "Remarks"
+    return None
+
+
+def _clean_label(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).replace("\n", " ").replace("\r", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return "" if text.lower() in {"nan", "none", "nat"} else text
+
+
+@dataclass
+class LongDataset:
+    long: pd.DataFrame
+    competitors: list[str]
+    locations: list[str]
+    origins: list[str]
+    mines: list[str]
+    remarks: list[str]
+    unit: str
+    unit_short: str
+    source_quotes: int = 0
+    rows: int = 0
+
+    @property
+    def products(self) -> list[str]:
+        return []
+
+
+def prepare_long(raw: pd.DataFrame, cfg: config.SheetConfig) -> LongDataset:
+    """Clean the Coal Master Database (one quote per row)."""
+    if raw is None or raw.empty:
+        raise ValueError("The Master Database is empty.")
+
+    frame = raw.copy()
+    frame.columns = [str(c).replace("\n", " ").strip() for c in frame.columns]
+
+    rename: dict[str, str] = {}
+    for column in frame.columns:
+        key = _long_key(column)
+        if key and key not in rename.values():
+            rename[column] = key
+    frame = frame.rename(columns=rename)
+
+    if "Date" not in frame.columns or "Competitor" not in frame.columns:
+        raise ValueError(
+            "The Master Database needs a Date column and an Importers / Traders "
+            f"column. Found: {', '.join(map(str, frame.columns))}"
+        )
+
+    for column in ("Location", "Origin", "Mine", "Grade", "Quantity", "Price",
+                   "Status", "Remarks", "Vessel", "VesselQty"):
+        if column not in frame.columns:
+            frame[column] = ""
+
+    frame["Date"] = _to_date(frame["Date"])
+    frame["Competitor"] = frame["Competitor"].map(_clean_label)
+    frame["Location"] = frame["Location"].map(_clean_label)
+    frame["Origin"] = frame["Origin"].map(_clean_label).map(_smart_title)
+    frame["Mine"] = frame["Mine"].map(_clean_label)
+    frame["Grade"] = frame["Grade"].map(_clean_label)
+    frame["Status"] = frame["Status"].map(_clean_label)
+    frame["Remarks"] = frame["Remarks"].map(_clean_label)
+    frame["Vessel"] = frame["Vessel"].map(_clean_label)
+    frame["Quantity"] = _to_number(frame["Quantity"])
+    frame["Price"] = _to_number(frame["Price"])
+
+    for source, target in cfg.aliases.items():
+        frame["Competitor"] = frame["Competitor"].replace(source, target)
+
+    frame = frame.dropna(subset=["Date"])
+    frame = frame[frame["Competitor"].ne("") & frame["Competitor"].str.lower().ne("nan")]
+    frame = frame[frame["Competitor"].ne("Importers/ Traders")]
+    # A zero / negative rate is a not-yet-quoted vessel row, not a real price.
+    frame["Price"] = frame["Price"].where(frame["Price"] > 0)
+    frame["Quantity"] = frame["Quantity"].where(frame["Quantity"] >= 0)
+    frame = frame.reset_index(drop=True)
+
+    if frame.empty:
+        raise ValueError("No dated importer rows were found in the Master Database.")
+
+    def unique(column: str) -> list[str]:
+        values = frame[column].dropna().map(lambda v: _clean_label(v))
+        return sorted({value for value in values if value}, key=str.casefold)
+
+    return LongDataset(
+        long=frame,
+        competitors=unique("Competitor"),
+        locations=unique("Location"),
+        origins=unique("Origin"),
+        mines=unique("Mine"),
+        remarks=unique("Remarks"),
+        unit=cfg.unit,
+        unit_short=cfg.unit_short,
+        source_quotes=int(frame["Price"].notna().sum()),
+        rows=len(frame),
+    )
+
+
+def filter_long(
+    dataset: LongDataset,
+    *,
+    dates: list | None = None,
+    locations: list[str] | None = None,
+    competitors: list[str] | None = None,
+    origins: list[str] | None = None,
+    mines: list[str] | None = None,
+    remarks: list[str] | None = None,
+) -> pd.DataFrame:
+    frame = dataset.long
+    if dates:
+        frame = frame[frame["Date"].isin(pd.to_datetime(list(dates)))]
+    if locations:
+        frame = frame[frame["Location"].isin(locations)]
+    if competitors:
+        frame = frame[frame["Competitor"].isin(competitors)]
+    if origins:
+        frame = frame[frame["Origin"].isin(origins)]
+    if mines:
+        frame = frame[frame["Mine"].isin(mines)]
+    if remarks:
+        frame = frame[frame["Remarks"].isin(remarks)]
+    return frame.copy()
+
+
+def long_summary(frame: pd.DataFrame) -> tuple[pd.DataFrame, object, dict]:
+    """Origin-wise quantity and average rate for the latest date in the filter."""
+    if frame.empty:
+        return pd.DataFrame(), None, {}
+    latest = frame["Date"].max()
+    today = frame[frame["Date"] == latest].copy()
+    if today.empty:
+        return pd.DataFrame(), latest, {}
+    today["Origin"] = today["Origin"].replace("", "Unknown")
+
+    rows = (
+        today.groupby("Origin", dropna=False)
+        .agg(
+            Quantity=("Quantity", "sum"),
+            AverageRate=("Price", "mean"),
+            Lines=("Date", "size"),
+        )
+        .reset_index()
+    )
+    rows = rows.sort_values("Origin", key=lambda series: series.str.casefold())
+    total = {
+        "Origin": "Grand Total",
+        "Quantity": today["Quantity"].sum(),
+        "AverageRate": today["Price"].mean(),
+        "Lines": len(today),
+    }
+    return rows, latest, total
+
+
+def latest_long_quotes(frame: pd.DataFrame) -> pd.DataFrame:
+    """One row per importer/trader on the latest date in the filter."""
+    if frame.empty:
+        return pd.DataFrame()
+    latest = frame["Date"].max()
+    today = frame[(frame["Date"] == latest) & frame["Price"].notna()].copy()
+    if today.empty:
+        return pd.DataFrame()
+
+    quotes = (
+        today.groupby("Competitor")
+        .agg(
+            Price=("Price", "mean"),
+            Quantity=("Quantity", "sum"),
+            Quotes=("Price", "size"),
+            Min=("Price", "min"),
+            Max=("Price", "max"),
+        )
+        .reset_index()
+    )
+
+    def meta_for(day: pd.DataFrame) -> str:
+        parts: list[str] = []
+        for _, row in day.drop_duplicates(["Origin", "Mine"]).iterrows():
+            label = row["Origin"] or "Unknown"
+            if row["Mine"]:
+                label += " · " + row["Mine"]
+            if label not in parts:
+                parts.append(label)
+        if len(parts) > 2:
+            return " | ".join(parts[:2]) + f" +{len(parts) - 2} more"
+        return " | ".join(parts)
+
+    by_competitor = today.groupby("Competitor")
+    meta = by_competitor.apply(meta_for, include_groups=False)
+    quotes["Meta"] = quotes["Competitor"].map(meta)
+
+    history = frame[(frame["Date"] < latest) & frame["Price"].notna()]
+    if history.empty:
+        quotes["Prev"] = pd.NA
+    else:
+        previous = (
+            history.groupby(["Competitor", "Date"])["Price"].mean().reset_index()
+            .sort_values("Date").groupby("Competitor").tail(1)
+            .rename(columns={"Price": "Prev"})
+        )
+        quotes = quotes.merge(previous[["Competitor", "Prev"]], on="Competitor", how="left")
+
+    quotes["Change"] = quotes["Price"] - quotes["Prev"]
+    quotes["ChangePct"] = quotes["Change"] / quotes["Prev"] * 100
+    quotes["VsMarket"] = quotes["Price"] - quotes["Price"].mean()
+    quotes["LatestDate"] = latest
+    return quotes.sort_values("Price").reset_index(drop=True)
+
+
+def long_matrix(frame: pd.DataFrame) -> pd.DataFrame:
+    data = frame.dropna(subset=["Price"])
+    if data.empty:
+        return pd.DataFrame()
+    table = (
+        data.pivot_table(index="Date", columns="Competitor", values="Price", aggfunc="mean")
+        .reset_index()
+    )
+    table.columns.name = None
+    return table
+
+
+def long_detail(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = ["Date", "Location", "Competitor", "Origin", "Mine", "Grade",
+               "Quantity", "Price", "Status", "Remarks"]
+    table = frame[columns].copy()
+    table = table.sort_values(["Date", "Competitor"], ascending=[False, True])
+    table["Date"] = table["Date"].dt.strftime("%Y-%m-%d")
+    return table.rename(
+        columns={
+            "Competitor": "Importers / Traders",
+            "Price": "Sale / Retail Rate (BDT/MT)",
+            "Quantity": "Quantity (MT)",
+            "Mine": "Mine / Grade",
+        }
+    )
